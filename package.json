@@ -1,0 +1,13 @@
+{
+  "name": "distributed-mediasoup",
+  "version": "1.0.0",
+  "description": "user media loopback over multiple sfu",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js & node consumer.js & node producer.js"
+  },
+  "dependencies": {
+    "mediasoup": "~3.7.0",
+    "ws": "^7.4.6"
+  }
+}

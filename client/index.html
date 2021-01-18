@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang='en'>
+
+<head>
+    <meta charset='UTF-8'>
+    <meta name='viewport' content='width=device-width, initial-scale=1.0'>
+    <title>distributed mediasoup</title>
+    <style>
+        video {
+            width: 640px;
+        }
+    </style>
+</head>
+
+<body>
+    <video id='video' autoplay playsinline></video>
+    <script src='bundle.js'></script>
+</body>
+
+</html>
+<script>
+    const PRODUCER_IP = '127.0.0.1';
+    const CONSUMER_IP = '127.0.0.1';
+    const PRODUCER_PORT = 8888;
+    const CONSUMER_PORT = 9999;
+
+    const producer = {
+        transactions: {},
+    };
+
+    producer.websocket = new WebSocket(`ws://${PRODUCER_IP}:${PRODUCER_PORT}`);
+    producer.websocket.onclose = (event) => { console.log('producer.websocket.onclose:', event); }
+    producer.websocket.onerror = (error) => { console.log('producer.websocket.onerror:', error); }
+    producer.websocket.onmessage = (event) => { producer.handleResponse(JSON.parse(event.data)); }
+    producer.websocket.onopen = (event) => {
+        console.log('producer.websocket.onopen:', event);
+        producer.produce();
+    }
+
+    producer.handleResponse = function (response) {
+        let request = producer.transactions[response.transaction];
+        console.log('producer.request:', request);
+        console.log('producer.response:', response);
+        request.promise(response);
+        delete producer.transactions[response.transaction];
+    }
+
+    producer.sendRequest = function (data) {
+        let transaction = producer.randomString();
+        let request = { ...data, transaction: transaction };
+        producer.websocket.send(JSON.stringify(request));
+        producer.transactions[transaction] = request;
+        return new Promise((resolve) => { producer.transactions[transaction].promise = resolve });
+    }
+
+    producer.randomString = function () {
+        return Math.random().toString().slice(2);
+    }
+
+    producer.produce = async function () {
+        let device = new Device();
+        let { id,
+            iceParameters,
+            iceCandidates,
+            dtlsParameters,
+            routerRtpCapabilities,
+        } = await producer.sendRequest({ type: 'createTransport' });
+
+        await device.load({ routerRtpCapabilities });
+        let transport = device.createSendTransport({ id, iceParameters, iceCandidates, dtlsParameters });
+
+        transport.on('connect', async ({ dtlsParameters }, callback, errback) => {
+            await producer.sendRequest({ type: 'connectTransport', dtlsParameters });
+            callback();
+        });
+
+        transport.on('produce', async ({ kind, rtpParameters }, callback, errback) => {
+            let { id } = await producer.sendRequest({ type: 'produce', kind, rtpParameters });
+            callback({ id: id });
+        });
+
+        let stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+        let videoProducer = await transport.produce({ track: stream.getVideoTracks()[0] });
+        let audioProducer = await transport.produce({ track: stream.getAudioTracks()[0] });
+
+        setTimeout(() => { consumer.consume() }, 1000);
+    }
+
+    const consumer = {
+        transactions: {},
+    };
+
+    consumer.websocket = new WebSocket(`ws://${CONSUMER_IP}:${CONSUMER_PORT}`);
+    consumer.websocket.onclose = (event) => { console.log('consumer.websocket.onclose:', event); }
+    consumer.websocket.onerror = (error) => { console.log('consumer.websocket.onerror:', error); }
+    consumer.websocket.onopen = (event) => { console.log('consumer.websocket.onopen:', event); }
+    consumer.websocket.onmessage = (event) => { consumer.handleResponse(JSON.parse(event.data)); };
+
+    consumer.handleResponse = function (response) {
+        let request = consumer.transactions[response.transaction];
+        console.log('consumer.request:', request);
+        console.log('consumer.response:', response);
+        request.promise(response);
+        delete consumer.transactions[response.transaction];
+    }
+
+    consumer.sendRequest = function (data) {
+        let transaction = consumer.randomString();
+        let request = { ...data, transaction: transaction };
+        consumer.websocket.send(JSON.stringify(request));
+        consumer.transactions[transaction] = request;
+        return new Promise((resolve) => { consumer.transactions[transaction].promise = resolve });
+    }
+
+    consumer.randomString = function () {
+        return Math.random().toString().slice(2);
+    }
+
+    consumer.consume = async function () {
+        let device = new Device();
+        let { id,
+            iceParameters,
+            iceCandidates,
+            dtlsParameters,
+            routerRtpCapabilities,
+        } = await consumer.sendRequest({ type: 'createTransport' });
+
+        await device.load({ routerRtpCapabilities });
+        let transport = device.createRecvTransport({ id, iceParameters, iceCandidates, dtlsParameters });
+
+        transport.on('connect', async ({ dtlsParameters }, callback, errback) => {
+            await consumer.sendRequest({ type: 'connectTransport', dtlsParameters });
+            callback();
+        });
+
+        let { video, audio } = await consumer.sendRequest({ type: 'consume', rtpCapabilities: device.rtpCapabilities });
+        let videoConsumer = await transport.consume({ id: video.id, producerId: video.producerId, kind: 'video', rtpParameters: video.rtpParameters });
+        let audioConsumer = await transport.consume({ id: audio.id, producerId: audio.producerId, kind: 'audio', rtpParameters: audio.rtpParameters });
+
+        document.getElementById('video').srcObject = new MediaStream([videoConsumer.track, audioConsumer.track]);
+    }
+</script>
